@@ -157,8 +157,8 @@ def test_syslog_stream_endpoint_streams_sse():
     assert not any(row["text"].startswith("[connected") for row in rows)
 
 
-def test_toolbox_duplicates_and_tags(tmp_path=None):
-    d = tempfile.mkdtemp()
+def test_toolbox_duplicates_and_tags(tmp_path):
+    d = str(tmp_path)
     a = os.path.join(d, "a.mp3")
     b = os.path.join(d, "b.mp3")
     for p in (a, b):
@@ -174,8 +174,8 @@ def test_toolbox_duplicates_and_tags(tmp_path=None):
     assert bad["ok"] is False
 
 
-def test_ringtone_validates_40s_limit():
-    d = tempfile.mkdtemp()
+def test_ringtone_validates_40s_limit(tmp_path):
+    d = str(tmp_path)
     src = os.path.join(d, "s.mp3")
     with open(src, "wb") as f:
         f.write(b"x")

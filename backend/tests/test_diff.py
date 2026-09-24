@@ -1,4 +1,4 @@
-from app.models import SyncAction, Track
+from app.models import Track
 from app.services.sync_plan import plan_sync
 
 

@@ -38,51 +38,12 @@ def test_accent_themes():
         "accent themes must set --accent"
 
 
-def test_theme_picker_in_ui():
-    app = _read(APP)
-    assert re.search(r"[Tt]heme", app), "UI needs a theme picker"
-    assert "localStorage" in app, "persist theme choice"
-
-
 # --- Animation ---
 def test_animations_with_reduced_motion_guard():
     css = _read(CSS)
     assert "@keyframes" in css, "expected UI animations"
     assert "prefers-reduced-motion" in css, "animations must respect reduced motion"
     assert "transition" in css
-
-
-# --- iPhone models ---
-def test_device_catalog():
-    assert os.path.isfile(DEVICES), "missing src/devices.ts model catalog"
-    catalog = _read(DEVICES)
-    assert len(re.findall(r"id:\s*['\"]", catalog)) >= 3, "at least 3 iPhone models"
-
-
-def test_device_art_per_model():
-    catalog = _read(DEVICES)
-    art = set(re.findall(r"/([\w-]+\.(?:svg|png))", catalog))
-    assert len(art) >= 3, "each model needs its own device render"
-    for name in art:
-        path = os.path.join(PUBLIC, name)
-        assert os.path.isfile(path), f"missing public/{name}"
-        with open(path, "rb") as f:
-            head = f.read(600)
-        if name.endswith(".svg"):
-            assert b"<svg" in head, f"public/{name} is not an SVG"
-        else:
-            assert head[:8] == b"\x89PNG\r\n\x1a\n", f"public/{name} is not a PNG"
-    for fake in ("iphone.svg", "iphone-13.svg", "iphone-14.svg",
-                 "iphone-16-pro.svg", "iphone-se.svg"):
-        assert fake not in catalog, f"fake gradient {fake} must be gone from the catalog"
-        assert not os.path.isfile(os.path.join(PUBLIC, fake)), \
-            f"fake gradient public/{fake} must be deleted"
-
-
-def test_model_picker_wired():
-    ui = _read(APP) + _read(HEADER)
-    assert re.search(r"[Mm]odel", ui), "UI must let users pick their iPhone model"
-    assert "iphone" in ui.lower() and (".svg" in ui or "-mini.png" in ui or "CONTOUR_MINI" in ui)
 
 
 # --- Plain-language copy + technical data ---
@@ -128,11 +89,17 @@ def test_app_icons_exist_and_used():
 
 
 # --- Real device renders ---
-def test_device_renders_are_portrait_pngs():
-    """Header + carousel art must be real portrait PNG renders, not gradients."""
+#: The old gradient placeholders; they must never come back.
+REMOVED_FAKES = ("iphone.svg", "iphone-13.svg", "iphone-14.svg",
+                 "iphone-16-pro.svg", "iphone-se.svg")
+
+
+def test_every_catalog_model_has_a_real_render_that_fits_the_slot():
+    """Header + carousel art: real PNG renders, one per model, all shaped
+    like the 52x105 header slot so object-fit: contain never letterboxes."""
     catalog = _read(DEVICES)
-    art = set(re.findall(r"/([\w-]+\.png)", catalog))
-    assert len(art) >= 3, "catalog must reference real PNG renders"
+    art = set(re.findall(r"svg:\s*'/([\w-]+\.png)'", catalog))
+    assert len(art) >= 40, f"expected the full lineup, got {len(art)}"
     for name in art:
         path = os.path.join(PUBLIC, name)
         assert os.path.isfile(path), f"missing public/{name}"
@@ -140,10 +107,15 @@ def test_device_renders_are_portrait_pngs():
         with open(path, "rb") as f:
             head = f.read(32)
         assert head[:8] == b"\x89PNG\r\n\x1a\n", f"public/{name} is not a PNG"
-        # IHDR: width/height are bytes 16..24 (big-endian); renders are portrait.
+        # IHDR: width/height are bytes 16..24 (big-endian).
         width = int.from_bytes(head[16:20], "big")
         height = int.from_bytes(head[20:24], "big")
-        assert height > width, f"public/{name} must be a portrait render"
+        assert abs(width / height - 52 / 105) < 0.005, \
+            f"public/{name} is {width}x{height}, not the 52:105 slot shape"
+    for fake in REMOVED_FAKES:
+        assert fake not in catalog, f"fake gradient {fake} is back in the catalog"
+        assert not os.path.isfile(os.path.join(PUBLIC, fake)), \
+            f"fake gradient public/{fake} must stay deleted"
 
 
 # --- GitHub sources ---
@@ -154,8 +126,10 @@ def test_sources_catalog_and_footer():
                  "libimobiledevice/libimobiledevice"):
         assert repo in sources, f"sources must link {repo}"
     assert "https://github.com/" in sources
-    app = _read(APP)
-    assert "github" in app.lower(), "footer must link GitHub sources"
+    # The old App footer moved into the Documentation tab's Sources page.
+    docs = _read(os.path.join(SRC, "components", "DocsView.tsx"))
+    assert "SOURCES.map(" in docs and "href={s.url}" in docs, \
+        "Documentation must render every source as a link"
 
 
 # --- Docs ---

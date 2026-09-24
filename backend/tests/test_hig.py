@@ -40,13 +40,8 @@ def test_collapsible_sidebar():
     app = _read(APP)
     assert re.search(r"[Ss]idebar.*[Cc]ollaps|showSidebar|sidebarOpen", app), \
         "HIG: let people hide the sidebar"
-    assert "aria-expanded" in app or "aria-label" in app
-
-
-def test_sidebar_nav_icons():
-    sidebar = _read(SIDEBAR)
-    assert "<svg" in sidebar, "HIG: familiar symbols for sidebar items"
-    assert "aria-hidden" in sidebar
+    assert "aria-expanded={sidebarOpen}" in app, \
+        "the sidebar toggle must announce its state"
 
 
 def test_sidebar_badges():

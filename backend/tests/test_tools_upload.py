@@ -4,7 +4,6 @@ import io
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.services import toolbox as tb
 
 client = TestClient(create_app())
 

@@ -65,3 +65,29 @@ def test_header_keeps_accessible_names():
     header = _read(HEADER)
     assert 'aria-label="Ask iPhone to trust this computer"' in header
     assert "title=" in header, "status elements need tooltips"
+
+
+def test_carousel_shows_the_whole_device():
+    # Minis have different aspects (Duo is wide, Pro Max is tall): cover
+    # would crop them, contain shows the whole render.
+    css = _read(CSS)
+    for sel in (".ft-device img", ".ft-carousel img"):
+        block = re.search(re.escape(sel) + r"[^{]*\{([^}]*)\}", css)
+        assert block, f"missing {sel} rule"
+        assert "object-fit: contain" in block.group(1), f"{sel} must not crop"
+
+
+def test_duo_pair_slide_is_double_width_at_every_breakpoint():
+    # Duo open + folded share one slide side by side; each is too narrow
+    # to read on its own, so the slot must be (at least) twice as wide.
+    header = _read(HEADER)
+    assert "CAROUSEL_SLIDES" in header and "is-duo-pair" in header
+    css = _read(CSS)
+    single = [int(w) for w in re.findall(
+        r"\.ft-device\s*\{[^}]*?width:\s*(\d+)px", css)]
+    duo = [int(w) for w in re.findall(
+        r"\.ft-device\.is-duo\s*\{[^}]*?width:\s*(\d+)px", css)]
+    assert single and len(single) == len(duo), (single, duo)
+    for one, two in zip(single, duo):
+        assert two >= 2 * one, f"Duo slot {two}px is not double {one}px"
+    assert ".ft-slide.is-duo-pair" in css, "pair must lay out side by side"

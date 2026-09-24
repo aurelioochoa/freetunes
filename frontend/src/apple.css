@@ -1315,7 +1315,7 @@ img.ft-real { background: transparent; }
 .ft-iphone.has-art.is-landscape.is-duo-folded img.ft-screen-img,
 .ft-iphone.has-art.is-landscape.is-duo-folded .ft-screen-hd,
 .ft-iphone.has-art.is-landscape.is-duo-folded iframe.ft-screen-hd {
-  position: absolute; left: 2.86%; top: 5.2%; width: 95.56%; height: 90.6%;
+  position: absolute; left: 2.86%; top: 4%; width: 95.56%; height: 90.6%;
   object-fit: cover;
 }
 .ft-iphone.has-art.is-landscape.is-eighteen {

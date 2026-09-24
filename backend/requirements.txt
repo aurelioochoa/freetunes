@@ -4,10 +4,13 @@ pydantic>=2
 mutagen>=1.47
 pillow>=10
 python-multipart>=0.0.9
-pymobiledevice3>=11
-# construct-typing 0.8+ rejects the fork's AFC dataclasses (DataclassFieldError
-# on import), which silently kills every AFC/DVT path including Preview shots.
-# Verified 2026-09-24: 0.8.1 breaks, 0.7.0 works.
-construct-typing<0.8
+# No version floor on purpose: the QuickTime (screen-mirror) fork installs
+# from git as pymobiledevice3 0.1.devN (the fork has no release tags), so
+# `pymobiledevice3>=11` made every `make setup` swap the fork back to stock
+# PyPI — silently removing `screen-mirror` and breaking the QuickTime tab.
+# construct-typing is NOT pinned here either: stock pymobiledevice3 11.x
+# requires >=0.8, so pinning <0.8 made this file unresolvable. The fork
+# needs <0.8 and gets it from its own installer (VALERIA_INSTALL_PACKAGES).
+pymobiledevice3
 pytest>=8
 httpx>=0.27

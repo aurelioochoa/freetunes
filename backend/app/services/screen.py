@@ -43,7 +43,7 @@ import time
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Callable
 
 from .devices import FakeRunner, SubprocessRunner
 
@@ -746,8 +746,9 @@ class ScreenService:
         shot = self.tool_present("idevicescreenshot")
         uxplay = self.tool_present("uxplay")
         hd = hd_status()
-        air = airplay_status(self.which)
-        valeria = valeria_status(self.which)
+        # tool_path, not which: mock mode must not probe host tools.
+        air = airplay_status(self.tool_path)
+        valeria = valeria_status(self.tool_path)
         qvh = valeria.get("qvh", False)
         device = bool(udid and udid != "mock-udid")
         needs: list[str] = []
@@ -837,7 +838,7 @@ class ScreenService:
             "airplay": air,
             "hints": {
                 "pymobiledevice3": PMD3_INSTALL_HINT,
-                "uxplay": uxplay_install_hint(self.which),
+                "uxplay": air["install_hint"],
                 "valeria": VALERIA_INSTALL_HINT,
             },
         }
@@ -912,98 +913,68 @@ class ScreenService:
                 self._coredevice_udid = False
         return bool(self._coredevice_udid)
 
+    def _run_shot(self, *argv: str) -> tuple[bytes | None, str]:
+        """Run one screenshot CLI into a private temp file.
+
+        ``argv`` holds ``{out}`` where the output path goes. Returns
+        (image bytes or None, the tool's own words when it failed).
+        """
+        tmpdir = Path(tempfile.mkdtemp(prefix="freetunes-shot-"))
+        out = tmpdir / "shot.png"
+        try:
+            r = self.runner.run(*(str(out) if a == "{out}" else a
+                                  for a in argv), timeout=25)
+            if (r.returncode == 0 and out.is_file()
+                    and out.stat().st_size > 100):
+                return out.read_bytes(), ""
+            return None, f"{r.stderr or ''}\n{r.stdout or ''}"
+        except Exception as e:
+            return None, str(e)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
     def _shot_via_coredevice(self, udid: str) -> bytes | None:
         """CoreDevice screencaptureservice — the newer capture service."""
         pmd3 = self.tool_path("pymobiledevice3") or "pymobiledevice3"
-        base = [pmd3, "developer", "core-device", "screen-capture",
-                "screenshot"]
         if self._coredevice_takes_udid(pmd3):
             tail = self._pmd3_udid(udid)
         else:
             # Without the flag this command grabs the first USB device.
             # With one phone that is the phone; with several it could be
             # somebody else's screen, so decline instead of guessing.
-            from .devices import get_service  # local: avoids an import cycle
-            try:
-                if len(get_service().list_devices()) > 1:
-                    return None
-            except Exception:
+            if not _first_device_is_ours():
                 return None
             tail = []
-        tmpdir = Path(tempfile.mkdtemp(prefix="freetunes-shot-"))
-        out = tmpdir / "shot.png"
-        try:
-            r = self.runner.run(*base, str(out), *tail, timeout=25)
-            if (r.returncode == 0 and out.is_file()
-                    and out.stat().st_size > 100):
-                data = out.read_bytes()
-                return data if _is_png(data) or len(data) > 100 else None
-            return None
-        except Exception:
-            return None
-        finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
+        data, _ = self._run_shot(pmd3, "developer", "core-device",
+                                 "screen-capture", "screenshot", "{out}",
+                                 *tail)
+        return data
 
     def _shot_via_pmd3(self, udid: str) -> bytes | None:
+        """DVT screenshot instrument; remembers the tool's failure log."""
         pmd3 = self.tool_path("pymobiledevice3") or "pymobiledevice3"
-        tmpdir = Path(tempfile.mkdtemp(prefix="freetunes-shot-"))
-        out = tmpdir / "shot.png"
-        self._last_dvt_log = ""
-        try:
-            cmd = (self._pmd3_base(udid, pmd3)
-                   + ["developer", "dvt", "screenshot", str(out)]
-                   + self._pmd3_udid(udid))
-            r = self.runner.run(*cmd, timeout=25)
-            if r.returncode == 0 and out.is_file() and out.stat().st_size > 0:
-                data = out.read_bytes()
-                return data if _is_png(data) or len(data) > 100 else None
-            self._last_dvt_log = ((r.stderr or "") + "\n" + (r.stdout or ""))
-            # Retry without the udid selector (older/newer CLI layouts).
-            if udid:
-                r = self.runner.run(
-                    pmd3, "developer", "dvt",
-                    "screenshot", str(out), timeout=25)
-                if (r.returncode == 0 and out.is_file()
-                        and out.stat().st_size > 100):
-                    return out.read_bytes()
-                self._last_dvt_log += ("\n" + (r.stderr or "")
-                                       + "\n" + (r.stdout or ""))
-            return None
-        except Exception:
-            return None
-        finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
+        base = (pmd3, "developer", "dvt", "screenshot", "{out}")
+        data, self._last_dvt_log = self._run_shot(*base,
+                                                  *self._pmd3_udid(udid))
+        if (data is None and self._pmd3_udid(udid)
+                and _first_device_is_ours()):
+            # Retry without the selector (older/newer CLI layouts) — only
+            # when the "first USB device" it then picks can only be ours.
+            data, log = self._run_shot(*base)
+            self._last_dvt_log += "\n" + log
+        return data
 
     def _shot_via_idevicescreenshot(self, udid: str) -> bytes | None:
         tool = self.tool_path("idevicescreenshot") or "idevicescreenshot"
-        tmpdir = Path(tempfile.mkdtemp(prefix="freetunes-shot-"))
-        out = tmpdir / "shot.png"
-        try:
-            args = [tool]
-            if udid and udid != "mock-udid":
-                args += ["-u", udid]
-            args.append(str(out))
-            r = self.runner.run(*args, timeout=25)
-            if r.returncode == 0 and out.is_file() and out.stat().st_size > 100:
-                return out.read_bytes()
-            return None
-        except Exception:
-            return None
-        finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
-
-    @staticmethod
-    def _pmd3_base(udid: str, binary: str = "pymobiledevice3") -> list[str]:
-        """pmd3 v11 takes `--udid` as a *subcommand* Device Option.
-
-        It must trail the subcommand path
-        (``pymobiledevice3 developer dvt screenshot out.png --udid X``) —
-        a global ``--udid`` aborts with "No such option".
-        """
-        return [binary]
+        sel = ["-u", udid] if udid and udid != "mock-udid" else []
+        data, _ = self._run_shot(tool, *sel, "{out}")
+        return data
 
     @staticmethod
     def _pmd3_udid(udid: str) -> list[str]:
+        """pmd3 v11 takes ``--udid`` as a *subcommand* Device Option: it
+        must trail the subcommand path (a global ``--udid`` aborts with
+        "No such option")."""
         if udid and udid != "mock-udid":
             return ["--udid", udid]
         return []
@@ -1028,160 +999,221 @@ class ScreenService:
         quality = max(30, min(int(quality or 70), 90))
         max_dim = _clamp_preview_dim(max_dim)
         data, _, live = self.take_shot(udid)
-        if not live:
-            key = (quality, max_dim)
-            cached = _placeholder_jpeg_cache.get(key)
-            if cached is None:
-                with Image.open(io.BytesIO(data)) as im:
-                    cached = _encode_preview_jpeg(im, quality, max_dim)
-                _placeholder_jpeg_cache[key] = cached
-            frame = cached
-        else:
+        frame = None if live else _placeholder_jpeg_cache.get(
+            (quality, max_dim))
+        if frame is None:
             try:
                 with Image.open(io.BytesIO(data)) as im:
                     frame = _encode_preview_jpeg(im, quality, max_dim)
             except Exception:
                 frame = data
+            if not live:
+                _placeholder_jpeg_cache[(quality, max_dim)] = frame
         return ((b"--frame\r\nContent-Type: image/jpeg\r\n"
                  b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n"
                  + frame + b"\r\n"), live)
 
-    def mjpeg_frames(self, udid: str, fps: float = 2.0,
-                     quality: int = 70,
-                     max_dim: int = PREVIEW_MAX_DIM_DEFAULT,
-                     ) -> Iterator[bytes]:
-        """Yield multipart MJPEG chunks (sync helper; prefers make_frame)."""
-        interval = 1.0 / max(0.5, min(float(fps or 2.0), 5.0))
-        while True:
-            start = time.monotonic()
-            chunk, _ = self.make_frame(udid, quality, max_dim)
-            yield chunk
-            # Count the capture itself against the interval: sleeping a
-            # full interval *after* a ~2 s shot halves the effective rate.
-            wait = interval - (time.monotonic() - start)
-            if wait > 0:
-                time.sleep(wait)
+
+def _first_device_is_ours(on_error: bool = False) -> bool:
+    """May a CLI without ``--udid`` safely take "the first USB device"?
+
+    Only when at most one phone is plugged in: with several it could be
+    somebody else's screen. ``on_error`` answers when the lookup fails.
+    """
+    from .devices import get_service  # local: avoids an import cycle
+    try:
+        return len(get_service().list_devices()) <= 1
+    except Exception:
+        return on_error
 
 
 # -- supervised subprocesses (HD serve-web, Valeria, uxplay) ------------
-_hd_proc: subprocess.Popen | None = None
-_hd_udid: str = ""
-#: serve-web logs here. An undrained ``stdout=PIPE`` wedges the server the
-#: moment the OS pipe buffer fills (~64 KB of logs), which on a long HD
-#: session looks exactly like "the screen froze".
-_hd_log: Path | None = None
-_valeria_proc: subprocess.Popen | None = None
-_valeria_udid: str = ""
-#: screen-mirror logs here (same undrained-PIPE hazard as HD).
-_valeria_log: Path | None = None
-#: Port the running Valeria server was started on (status URL must match).
-_valeria_port: int = VALERIA_DEFAULT_PORT
-#: Which tool backs the running server: "screen-mirror" | "qvh" | "".
-_valeria_backend: str = ""
-_airplay_proc: subprocess.Popen | None = None
-#: uxplay logs here; see _airplay_log_tail.
-_airplay_log: Path | None = None
+class _Server:
+    """One supervised helper process and the log file it writes.
+
+    Output goes to a file, never ``stdout=PIPE``: an undrained pipe
+    wedges the child once the OS buffer fills (~64 KB of logs), which on
+    a long session looks exactly like "the screen froze" — and the log's
+    last lines are the only honest failure reason there is.
+    """
+
+    def __init__(self, name: str, port: int = 0) -> None:
+        self.name = name
+        self.port = port
+        self.proc: subprocess.Popen | None = None
+        self.log: Path | None = None
+        self.udid = ""
+
+    def alive(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/" if self.alive() else ""
+
+    def spawn(self, cmd: list[str], udid: str = "") -> None:
+        """Start ``cmd`` logging to a fresh temp file (raises OSError)."""
+        self.stop()
+        fd, path = tempfile.mkstemp(prefix=f"freetunes-{self.name}-",
+                                    suffix=".log")
+        os.close(fd)
+        self.log = Path(path)
+        try:
+            with self.log.open("w") as fh:
+                self.proc = subprocess.Popen(
+                    cmd, stdout=fh, stderr=subprocess.STDOUT, text=True)
+        except OSError:
+            self.stop()
+            raise
+        self.udid = udid
+
+    def tail(self, limit: int = 500) -> str:
+        """Last words of the server, for an honest failure reason."""
+        if self.log is None:
+            return ""
+        try:
+            return self.log.read_text(errors="replace").strip()[-limit:]
+        except OSError:
+            return ""
+
+    def wait_http(self, url: str, timeout_s: float) -> bool:
+        """Poll ``url`` until it answers; False once the process died."""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self.proc is not None and self.proc.poll() is not None:
+                return False
+            try:
+                with urllib.request.urlopen(url, timeout=2) as res:
+                    if res.status < 500:
+                        return True
+            except Exception:
+                pass
+            time.sleep(0.5)
+        return False
+
+    def stop(self) -> None:
+        p, self.proc, self.udid = self.proc, None, ""
+        if p is not None and p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+        log, self.log = self.log, None
+        if log is not None:
+            try:
+                log.unlink()
+            except OSError:
+                pass
+
+
+_hd = _Server("hd", HD_DEFAULT_PORT)
+_valeria = _Server("valeria", VALERIA_DEFAULT_PORT)
+_airplay = _Server("airplay")
 #: True while the running receiver renders into the page, not a window.
 _airplay_embedded: bool = False
 
 
-def _proc_alive(p: subprocess.Popen | None) -> bool:
-    return p is not None and p.poll() is None
+def _mock_env() -> bool:
+    return os.environ.get("FREETUNES_MOCK", "0") == "1"
+
+
+def _which_soft(which: Callable[[str], str | None], name: str) -> str | None:
+    """``which(name)`` that never raises."""
+    try:
+        return which(name)
+    except Exception:
+        return None
+
+
+#: ``--help`` text per (binary, subcommand). Only successful probes are
+#: kept for good; a failed one is retried after this many seconds, so a
+#: fork installed by hand in a terminal lights up on the next status poll
+#: instead of reading as "missing" until the backend restarts.
+CLI_HELP_RETRY_SECONDS = 30.0
+_help_cache: dict[tuple[str, ...], tuple[float, str]] = {}
+
+
+def _cli_help(binary: str, *sub: str) -> str:
+    """``<binary> <sub...> --help`` text, "" when that subcommand is absent.
+
+    Stock pymobiledevice3 answers ``No such command 'screen-mirror'`` with
+    a non-zero exit — that must read as "not there", so only a zero-exit
+    help text counts.
+    """
+    key = (binary, *sub)
+    hit = _help_cache.get(key)
+    if hit is not None and (hit[1] or time.monotonic() - hit[0]
+                            < CLI_HELP_RETRY_SECONDS):
+        return hit[1]
+    text = ""
+    try:
+        r = subprocess.run([binary, *sub, "--help"], capture_output=True,
+                           text=True, timeout=20)
+        if r.returncode == 0:
+            text = (r.stdout or "") + (r.stderr or "")
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    _help_cache[key] = (time.monotonic(), text)
+    return text
+
+
+def _serve_web_help(binary: str) -> str:
+    return _cli_help(binary, "developer", "core-device", "display",
+                     "serve-web")
+
+
+def _screen_mirror_help(binary: str) -> str:
+    return _cli_help(binary, "screen-mirror")
 
 
 def hd_status() -> dict:
-    running = _proc_alive(_hd_proc)
-    return {
-        "running": running,
-        "udid": _hd_udid if running else "",
-        "url": (f"http://127.0.0.1:{HD_DEFAULT_PORT}/"
-                if running else ""),
-    }
+    running = _hd.alive()
+    return {"running": running, "udid": _hd.udid if running else "",
+            "url": _hd.url}
 
 
 def hd_start(udid: str, which: Callable[[str], str | None] = _default_which,
              port: int = HD_DEFAULT_PORT) -> dict:
     """Supervise `pymobiledevice3 ... display serve-web`; honest failures."""
-    global _hd_proc, _hd_udid
-    if os.environ.get("FREETUNES_MOCK", "0") == "1":
+    if _mock_env():
         return {"ok": False, "running": False,
                 "reason": "Mock mode — plug in a trusted iPhone with "
                           "Developer Mode on, then start HD."}
-    if _proc_alive(_hd_proc):
-        return {"ok": True, "running": True,
-                "udid": _hd_udid,
-                "url": f"http://127.0.0.1:{port}/",
-                "note": "HD server already running."}
-    try:
-        binary = which("pymobiledevice3")
-    except Exception:
-        binary = None
+    if _hd.alive():
+        return {"ok": True, "running": True, "udid": _hd.udid,
+                "url": _hd.url, "note": "HD server already running."}
+    binary = _which_soft(which, "pymobiledevice3")
     if not binary:
         return {"ok": False, "running": False, "reason": PMD3_INSTALL_HINT}
-    if "--udid" not in _serve_web_help(binary):
-        # Without the flag serve-web takes the first USB device. With one
-        # phone that is the phone; with several, streaming the wrong
-        # screen is not a mistake worth making silently.
-        from .devices import get_service  # local: avoids an import cycle
-        try:
-            many = len(get_service().list_devices()) > 1
-        except Exception:
-            many = False
-        if many:
-            return {"ok": False, "running": False,
-                    "reason": "This pymobiledevice3 cannot be told which "
-                              "iPhone to stream (its serve-web has no "
-                              "--udid). Unplug the other devices, or use "
-                              "Preview/AirPlay instead."}
+    if ("--udid" not in _serve_web_help(binary)
+            and not _first_device_is_ours(on_error=True)):
+        # Without the flag serve-web takes the first USB device: with
+        # several phones, streaming the wrong screen is not a mistake
+        # worth making silently.
+        return {"ok": False, "running": False,
+                "reason": "This pymobiledevice3 cannot be told which "
+                          "iPhone to stream (its serve-web has no "
+                          "--udid). Unplug the other devices, or use "
+                          "Preview/AirPlay instead."}
     info = _media_support(binary)
     if info is not None and not info.get("supportedFeatures"):
         return {"ok": False, "running": False,
                 "reason": HD_UNSUPPORTED_REASON,
                 "device_says": info.get("supportedFeaturesDescription", "")}
-    cmd = _serve_web_cmd(udid, port, binary)
-    global _hd_log
+    _hd.port = port
     try:
-        fd, log_path = tempfile.mkstemp(prefix="freetunes-hd-", suffix=".log")
-        os.close(fd)
-        _hd_log = Path(log_path)
-        with _hd_log.open("w") as fh:
-            _hd_proc = subprocess.Popen(
-                cmd, stdout=fh, stderr=subprocess.STDOUT, text=True)
-        _hd_udid = udid
-    except (OSError, FileNotFoundError) as e:
-        _hd_proc = None
+        _hd.spawn(_serve_web_cmd(udid, port, binary), udid)
+    except OSError as e:
         return {"ok": False, "running": False, "reason": str(e)}
-    if _wait_http_ok(f"http://127.0.0.1:{port}/", timeout_s=25.0):
-        return {"ok": True, "running": True, "udid": udid,
-                "url": f"http://127.0.0.1:{port}/"}
-    tail = _hd_log_tail()
-    _hd_stop()
+    if _hd.wait_http(f"http://127.0.0.1:{port}/", timeout_s=25.0):
+        return {"ok": True, "running": True, "udid": udid, "url": _hd.url}
+    tail = _hd.tail()
+    _hd.stop()
     hint = ("Is Developer Mode on (Settings -> Privacy & Security), the "
             "phone trusted + unlocked, and iOS 17.4+?")
     return {"ok": False, "running": False,
             "reason": f"HD server did not come up. {hint} {tail}".strip()}
-
-
-#: Cached ``serve-web --help`` text per binary — one probe per process.
-_serve_web_help_cache: dict[str, str] = {}
-
-
-def _serve_web_help(binary: str) -> str:
-    """``serve-web --help`` text, or "" when the CLI cannot be probed."""
-    cached = _serve_web_help_cache.get(binary)
-    if cached is not None:
-        return cached
-    text = ""
-    try:
-        r = subprocess.run(
-            [binary, "developer", "core-device",
-             "display", "serve-web", "--help"],
-            capture_output=True, text=True, timeout=15)
-        text = (r.stdout or "") + (r.stderr or "")
-    except (OSError, subprocess.TimeoutExpired):
-        text = ""
-    _serve_web_help_cache[binary] = text
-    return text
 
 
 #: Apple gates the CoreDevice media stream (what HD rides on) to
@@ -1192,8 +1224,8 @@ def _serve_web_help(binary: str) -> str:
 #: hand the user a viewer page that will never show a frame.
 HD_UNSUPPORTED_REASON = (
     "This iPhone does not offer the CoreDevice media stream HD needs: "
-    "Apple gates it to iOS 27 or newer (the phone answers \u201cRemote "
-    "control requires iOS 27.0 or later\u201d). Use Preview (USB) for "
+    "Apple gates it to iOS 27 or newer (the phone answers “Remote "
+    "control requires iOS 27.0 or later”). Use Preview (USB) for "
     "stills, or AirPlay (Wi-Fi) for full-rate video with sound."
 )
 
@@ -1240,83 +1272,12 @@ def _serve_web_cmd(udid: str, port: int, binary: str) -> list[str]:
     return [binary] + tail
 
 
-def _wait_http_ok(url: str, timeout_s: float = 25.0) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if _hd_proc is not None and _hd_proc.poll() is not None:
-            return False
-        try:
-            with urllib.request.urlopen(url, timeout=2) as res:
-                if res.status < 500:
-                    return True
-        except Exception:
-            pass
-        time.sleep(0.5)
-    return False
-
-
-def _hd_log_tail(limit: int = 500) -> str:
-    """Last words of the supervised server, for an honest failure reason."""
-    if _hd_log is None:
-        return ""
-    try:
-        return _hd_log.read_text(errors="replace").strip()[-limit:]
-    except OSError:
-        return ""
-
-
-def _hd_stop() -> None:
-    global _hd_proc, _hd_udid, _hd_log
-    p, _hd_proc, _hd_udid = _hd_proc, None, ""
-    if p is not None and p.poll() is None:
-        p.terminate()
-        try:
-            p.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            p.kill()
-    log, _hd_log = _hd_log, None
-    if log is not None:
-        try:
-            log.unlink()
-        except OSError:
-            pass
-
-
 def hd_stop() -> dict:
-    _hd_stop()
+    _hd.stop()
     return {"ok": True, "running": False}
 
 
 # -- QuickTime-USB (Valeria H.264 30-60 fps, no Developer Mode) -----------
-#: Cached ``screen-mirror --help`` text per binary — one probe per process.
-_valeria_help_cache: dict[str, str] = {}
-
-
-def _screen_mirror_help(binary: str) -> str:
-    """``screen-mirror --help`` text, or "" when the CLI cannot be probed.
-
-    Stock pymobiledevice3 answers ``No such command 'screen-mirror'`` with
-    a non-zero exit — that must read as "no fork", not as a backend. Only
-    a zero-exit help text claims screen-mirror.
-    """
-    cached = _valeria_help_cache.get(binary)
-    if cached is not None:
-        return cached
-    text = ""
-    try:
-        r = subprocess.run(
-            [binary, "screen-mirror", "--help"],
-            capture_output=True, text=True, timeout=15)
-        if r.returncode == 0:
-            text = (r.stdout or "") + (r.stderr or "")
-        else:
-            text = ""
-    except (OSError, subprocess.TimeoutExpired):
-        text = ""
-    _valeria_help_cache[binary] = text
-    return text
-
-
 def _valeria_cmd(udid: str, port: int, binary: str) -> list[str]:
     """Build the screen-mirror argv, passing only flags this CLI really has.
 
@@ -1352,21 +1313,6 @@ def _valeria_cmd(udid: str, port: int, binary: str) -> list[str]:
     return [binary] + tail
 
 
-def _wait_valeria_http_ok(url: str, timeout_s: float = 20.0) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if _valeria_proc is not None and _valeria_proc.poll() is not None:
-            return False
-        try:
-            with urllib.request.urlopen(url, timeout=2) as res:
-                if res.status < 500:
-                    return True
-        except Exception:
-            pass
-        time.sleep(0.5)
-    return False
-
-
 #: Log signature when USB was claimed fine but the iPhone sends no video
 #: clock because its screen is asleep/locked ("capture handshake
 #: completed but iDevice sent no video clock"). Nothing on the host side
@@ -1388,16 +1334,6 @@ def _valeria_log_names_asleep(tail: str) -> bool:
     """Does the server log blame the asleep phone (not host/USB)?"""
     low = (tail or "").lower()
     return any(m in low for m in VALERIA_ASLEEP_MARKS)
-
-
-def _valeria_log_tail(limit: int = 500) -> str:
-    """Last words of the Valeria server, for an honest failure reason."""
-    if _valeria_log is None:
-        return ""
-    try:
-        return _valeria_log.read_text(errors="replace").strip()[-limit:]
-    except OSError:
-        return ""
 
 
 #: Log lines proving the USB capture itself came up (not just the viewer
@@ -1428,7 +1364,7 @@ def _valeria_capture_ok(timeout_s: float = 5.0) -> bool:
     """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        tail = _valeria_log_tail(2000).lower()
+        tail = _valeria.tail(2000).lower()
         if any(m in tail for m in VALERIA_CAPTURE_OK_MARKS):
             return True
         if (_valeria_log_names_no_qt_config(tail)
@@ -1465,10 +1401,21 @@ def _valeria_start_failure(tail: str) -> dict:
             "reason": f"QuickTime server did not come up. {hint} {tail}".strip()}
 
 
-#: Seconds a photo-mount probe stays valid. Mounts only change on
-#: plug/unplug/eject and the UI polls /screen/status every 10 s.
-PHOTO_HOLD_TTL_SECONDS = 15.0
-_photo_hold_cache: tuple[float, dict] | None = None
+#: Host probes the 10 s status poll would otherwise re-run every time
+#: (gio + four systemctl/grep calls). Mounts and the usbmuxd service only
+#: change on plug/unplug/setup, so a short TTL costs nothing in accuracy.
+PROBE_TTL_SECONDS = 15.0
+_probe_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _cached_probe(key: str, probe: Callable[[], dict]) -> dict:
+    now = time.monotonic()
+    hit = _probe_cache.get(key)
+    if hit is not None and now - hit[0] < PROBE_TTL_SECONDS:
+        return hit[1]
+    value = probe()
+    _probe_cache[key] = (now, value)
+    return value
 
 
 def photo_hold_state(run: Callable | None = None) -> dict:
@@ -1479,14 +1426,7 @@ def photo_hold_state(run: Callable | None = None) -> dict:
     SetActiveConfiguration number=6 (busy). Needs no root to detect or
     to release (``gio mount -u`` on the user's own mount).
     """
-    global _photo_hold_cache
-    now = time.monotonic()
-    if _photo_hold_cache is not None and now - _photo_hold_cache[0] < \
-            PHOTO_HOLD_TTL_SECONDS:
-        return _photo_hold_cache[1]
-    state = _photo_hold_probe(run)
-    _photo_hold_cache = (now, state)
-    return state
+    return _cached_probe("photo_hold", lambda: _photo_hold_probe(run))
 
 
 def _photo_hold_probe(run: Callable | None = None) -> dict:
@@ -1500,35 +1440,11 @@ def _photo_hold_probe(run: Callable | None = None) -> dict:
     return {"held": bool(mounts), "mounts": mounts, "gio": True}
 
 
-def _forget_photo_hold_cache() -> None:
-    global _photo_hold_cache
-    _photo_hold_cache = None
-
-
 def _mount_matches_udid(addr: str, udid: str) -> bool:
     """Does a gphoto2:// address name this iPhone (serial = UDID)?"""
     norm = re.sub(r"[^0-9a-f]", "", (addr or "").lower())
     want = re.sub(r"[^0-9a-f]", "", (udid or "").lower())
     return bool(want) and want in norm
-
-
-def _valeria_stop() -> None:
-    global _valeria_proc, _valeria_udid, _valeria_log
-    global _valeria_port, _valeria_backend
-    p, _valeria_proc, _valeria_udid = _valeria_proc, None, ""
-    _valeria_backend = ""
-    if p is not None and p.poll() is None:
-        p.terminate()
-        try:
-            p.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            p.kill()
-    log, _valeria_log = _valeria_log, None
-    if log is not None:
-        try:
-            log.unlink()
-        except OSError:
-            pass
 
 
 def _run_capture(argv: list[str], timeout: int = 10) -> tuple[int, str]:
@@ -1548,7 +1464,8 @@ def usbmuxd_state(run: Callable | None = None) -> dict:
     itself), so ``ready`` is True. On Linux ``ready`` means the fork
     binary is installed *and* the running service is that binary with
     ``USBMUXD_DEFAULT_DEVICE_MODE=2`` — anything less still fails as
-    "no QT-capable config". ``run`` is injectable for tests.
+    "no QT-capable config". ``run`` is injectable for tests. Uncached:
+    the status poll goes through ``_cached_probe`` instead.
     """
     run = run or _run_capture
     if not sys.platform.startswith("linux"):
@@ -1615,23 +1532,11 @@ def valeria_status(
     usbmuxd fails every start as "no QT-capable config").
     """
     which = which or _default_which
-    running = _proc_alive(_valeria_proc)
-    try:
-        pmd3_bin = which("pymobiledevice3")
-    except Exception:
-        pmd3_bin = None
-    try:
-        have_qvh = which("qvh") is not None
-    except Exception:
-        have_qvh = False
+    running = _valeria.alive()
+    pmd3_bin = _which_soft(which, "pymobiledevice3")
+    have_qvh = _which_soft(which, "qvh") is not None
+    # Only claim the backend when the CLI advertises screen-mirror.
     screen_mirror = bool(pmd3_bin and _screen_mirror_help(pmd3_bin))
-    # An empty help probe means either "no binary" or "binary without the
-    # fork": only claim the backend when the CLI advertises screen-mirror.
-    if pmd3_bin and not screen_mirror:
-        # Old stock pmd3: probe once more via the subcommand list so a
-        # fork that renames help output is not missed? No — keep it honest:
-        # without advertised help there is no supervised route to start.
-        pass
     needs: list[str] = []
     if not pmd3_bin and not have_qvh:
         needs.append(f"Install the QuickTime-USB route: {VALERIA_INSTALL_HINT}")
@@ -1639,8 +1544,7 @@ def valeria_status(
         needs.append(
             "This pymobiledevice3 has no `screen-mirror` subcommand — "
             f"{VALERIA_INSTALL_HINT}. {QVH_INSTALL_HINT}.")
-    ready = bool(pmd3_bin and screen_mirror) or have_qvh
-    usb = usbmuxd_state()
+    usb = _cached_probe("usbmuxd", usbmuxd_state)
     if usb.get("linux") and not usb.get("ready") and not running:
         # Proactive, not after a 20 s doomed start: distro usbmuxd fails
         # every QuickTime start as "no QT-capable config".
@@ -1650,17 +1554,13 @@ def valeria_status(
             f"{usb['needs'][0] if usb.get('needs') else ''} "
             f"Run: {VALERIA_USBMUX_SETUP_COMMAND} (needs sudo) or press "
             "“Run Linux USB setup” below.".strip())
-    if running:
-        url = f"http://127.0.0.1:{_valeria_port}/"
-    else:
-        url = ""
     return {
         "running": running,
-        "udid": _valeria_udid if running else "",
-        "url": url,
-        "backend": _valeria_backend if running else (
-            "screen-mirror" if screen_mirror else ("qvh" if have_qvh else "")),
-        "ready": ready,
+        "udid": _valeria.udid if running else "",
+        "url": _valeria.url,
+        "backend": "screen-mirror" if running or screen_mirror else (
+            "qvh" if have_qvh else ""),
+        "ready": screen_mirror or have_qvh,
         "needs": needs,
         "install_hint": VALERIA_INSTALL_HINT,
         "install_command": VALERIA_INSTALL_COMMAND,
@@ -1674,7 +1574,7 @@ def valeria_status(
         "qvh": have_qvh,
         "screen_mirror": screen_mirror,
         "photo_hold": photo_hold_state(),
-        "log": _valeria_log_tail() if running else "",
+        "log": _valeria.tail() if running else "",
     }
 
 
@@ -1694,8 +1594,6 @@ def _valeria_trusted(udid: str) -> bool | None:
         from .devices import get_service  # local: avoids an import cycle
         devs = get_service().list_devices()
     except Exception:
-        return None
-    if not devs:
         return None
     for d in devs:
         if d.udid == udid:
@@ -1717,17 +1615,13 @@ def valeria_start(udid: str,
     like QuickTime Player. Fights usbmuxd for USB — the failure reason
     says so instead of "it just does not work".
     """
-    global _valeria_proc, _valeria_udid, _valeria_log
-    global _valeria_port, _valeria_backend
-    if os.environ.get("FREETUNES_MOCK", "0") == "1":
+    if _mock_env():
         return {"ok": False, "running": False,
                 "reason": "Mock mode — plug in a trusted iPhone over USB, "
                           "then start QuickTime."}
-    if _proc_alive(_valeria_proc):
-        return {"ok": True, "running": True,
-                "udid": _valeria_udid,
-                "url": f"http://127.0.0.1:{_valeria_port}/",
-                "backend": _valeria_backend or "screen-mirror",
+    if _valeria.alive():
+        return {"ok": True, "running": True, "udid": _valeria.udid,
+                "url": _valeria.url, "backend": "screen-mirror",
                 "note": "QuickTime server already running."}
     if trusted is None:
         trusted = _valeria_trusted(udid)
@@ -1737,40 +1631,27 @@ def valeria_start(udid: str,
                            "Trust in the prompt, then press Start QuickTime "
                            "again. QuickTime needs trust, but no Developer "
                            "Mode and no developer image.")}
-    try:
-        binary = which("pymobiledevice3")
-    except Exception:
-        binary = None
+    binary = _which_soft(which, "pymobiledevice3")
     if not binary:
-        try:
-            have_qvh = which("qvh") is not None
-        except Exception:
-            have_qvh = False
-        hint = VALERIA_INSTALL_HINT + (f". {QVH_INSTALL_HINT}." if not have_qvh
-                                       else ". qvh is present — run "
-                                            "`qvh gstreamer` in a terminal "
-                                            "as the manual fallback.")
+        hint = VALERIA_INSTALL_HINT + (
+            ". qvh is present — run `qvh gstreamer` in a terminal as the "
+            "manual fallback." if _which_soft(which, "qvh")
+            else f". {QVH_INSTALL_HINT}.")
         return {"ok": False, "running": False, "reason": hint}
-    if not _screen_mirror_help(binary):
+    help_text = _screen_mirror_help(binary)
+    if not help_text:
         return {"ok": False, "running": False,
                 "reason": ("This pymobiledevice3 has no `screen-mirror` "
                            f"subcommand — {VALERIA_INSTALL_HINT}. "
                            f"{QVH_INSTALL_HINT}.")}
-    if "--udid" not in _screen_mirror_help(binary):
-        # Without the flag screen-mirror takes the first USB device. With
-        # one phone that is the phone; with several, streaming the wrong
-        # screen is not a mistake worth making silently.
-        from .devices import get_service  # local: avoids an import cycle
-        try:
-            many = len(get_service().list_devices()) > 1
-        except Exception:
-            many = False
-        if many:
-            return {"ok": False, "running": False,
-                    "reason": "This screen-mirror cannot be told which "
-                              "iPhone to stream (no --udid). Unplug the "
-                              "other devices, or use Preview instead."}
-    cmd = _valeria_cmd(udid, port, binary)
+    if "--udid" not in help_text and not _first_device_is_ours(on_error=True):
+        # Without the flag screen-mirror takes the first USB device: with
+        # several phones, streaming the wrong screen is not a mistake
+        # worth making silently.
+        return {"ok": False, "running": False,
+                "reason": "This screen-mirror cannot be told which "
+                          "iPhone to stream (no --udid). Unplug the "
+                          "other devices, or use Preview instead."}
     # Fast-fail before claiming USB: a desktop photo importer holding the
     # PTP interface dooms the capture switch (SetActiveConfiguration
     # number=6) while the viewer page still serves HTTP — which used to
@@ -1779,42 +1660,27 @@ def valeria_start(udid: str,
     hold = photo_hold_state()
     if hold.get("held") and (not udid or any(
             _mount_matches_udid(m, udid) for m in hold.get("mounts", []))):
-        tail = ("gvfs photo mount held: "
-                + ", ".join(hold.get("mounts", [])))
-        failure = _valeria_start_failure(
-            "SetActiveConfiguration failed (number=6). " + tail)
-        return failure
+        return _valeria_start_failure(
+            "SetActiveConfiguration failed (number=6). gvfs photo mount "
+            "held: " + ", ".join(hold.get("mounts", [])))
+    _valeria.port = port
     try:
-        fd, log_path = tempfile.mkstemp(prefix="freetunes-valeria-",
-                                        suffix=".log")
-        os.close(fd)
-        _valeria_log = Path(log_path)
-        with _valeria_log.open("w") as fh:
-            _valeria_proc = subprocess.Popen(
-                cmd, stdout=fh, stderr=subprocess.STDOUT, text=True)
-        _valeria_udid = udid
-        _valeria_port = port
-        _valeria_backend = "screen-mirror"
-    except (OSError, FileNotFoundError) as e:
-        _valeria_proc = None
+        _valeria.spawn(_valeria_cmd(udid, port, binary), udid)
+    except OSError as e:
         return {"ok": False, "running": False, "reason": str(e)}
-    if _wait_valeria_http_ok(f"http://127.0.0.1:{port}/", timeout_s=20.0):
-        # The viewer page answers HTTP even when the capture itself is
-        # dead (busy USB, wrong usbmuxd): confirm pixels before ok.
-        if _valeria_capture_ok():
-            return {"ok": True, "running": True, "udid": udid,
-                    "url": f"http://127.0.0.1:{port}/",
-                    "backend": "screen-mirror"}
-        tail = _valeria_log_tail()
-        _valeria_stop()
-        return _valeria_start_failure(tail)
-    tail = _valeria_log_tail()
-    _valeria_stop()
+    # The viewer page answers HTTP even when the capture itself is dead
+    # (busy USB, wrong usbmuxd): confirm pixels before ok.
+    if (_valeria.wait_http(f"http://127.0.0.1:{port}/", timeout_s=20.0)
+            and _valeria_capture_ok() and _valeria.alive()):
+        return {"ok": True, "running": True, "udid": udid,
+                "url": _valeria.url, "backend": "screen-mirror"}
+    tail = _valeria.tail()
+    _valeria.stop()
     return _valeria_start_failure(tail)
 
 
 def valeria_stop() -> dict:
-    _valeria_stop()
+    _valeria.stop()
     return {"ok": True, "running": False}
 
 
@@ -1857,7 +1723,7 @@ def valeria_install(
     """
     global _valeria_installing
     which = which or _default_which
-    if os.environ.get("FREETUNES_MOCK", "0") == "1":
+    if _mock_env():
         return {"ok": False, "installed": False,
                 "reason": "Mock mode — install on the real host with: "
                           + VALERIA_INSTALL_COMMAND}
@@ -1865,10 +1731,7 @@ def valeria_install(
         return {"ok": False, "installed": False, "install_running": True,
                 "reason": "Install already running — wait for it to finish, "
                           "then press Refresh."}
-    try:
-        pmd3_bin = which("pymobiledevice3")
-    except Exception:
-        pmd3_bin = None
+    pmd3_bin = _which_soft(which, "pymobiledevice3")
     if pmd3_bin and _screen_mirror_help(pmd3_bin):
         return {"ok": True, "installed": True, "already": True,
                 "note": "QuickTime dependencies already installed — "
@@ -1892,11 +1755,8 @@ def valeria_install(
         tail = tail[-2000:] if len(tail) > 2000 else tail
         # The fork may have landed under a fresh sys.prefix/bin — drop the
         # cached probe so the next status sees it with no restart.
-        _valeria_help_cache.clear()
-        try:
-            fresh_bin = which("pymobiledevice3")
-        except Exception:
-            fresh_bin = None
+        _help_cache.clear()
+        fresh_bin = _which_soft(which, "pymobiledevice3")
         if proc.returncode == 0 and fresh_bin and _screen_mirror_help(fresh_bin):
             return {"ok": True, "installed": True,
                     "note": "Installed — replug the iPhone, tap Trust, "
@@ -1934,7 +1794,7 @@ def valeria_usbmux_setup(timeout_s: int = 600) -> dict:
     command instead of hanging on a prompt nobody can answer.
     """
     global _usbmux_setup_running
-    if os.environ.get("FREETUNES_MOCK", "0") == "1":
+    if _mock_env():
         return {"ok": False, "installed": False,
                 "reason": "Mock mode — run on the real Linux host: "
                           + VALERIA_USBMUX_SETUP_COMMAND}
@@ -1982,6 +1842,7 @@ def valeria_usbmux_setup(timeout_s: int = 600) -> dict:
                     "log": tail, "command": VALERIA_USBMUX_SETUP_COMMAND}
         # Trust the probe, not the exit code: only a running fork with
         # MODE=2 actually unblocks QuickTime.
+        _probe_cache.pop("usbmuxd", None)
         state = usbmuxd_state()
         if proc.returncode == 0 and state.get("ready"):
             return {"ok": True, "installed": True,
@@ -2002,33 +1863,34 @@ def airplay_status(
         which: Callable[[str], str | None] | None = None) -> dict:
     """Receiver state *and* what this host still needs to run one."""
     which = which or _default_which
-    running = _proc_alive(_airplay_proc)
-    try:
-        have_uxplay = which("uxplay") is not None
-    except Exception:
-        have_uxplay = False
+    running = _airplay.alive()
+    have_uxplay = _which_soft(which, "uxplay") is not None
     avahi = avahi_state()
+    hint = uxplay_install_hint(which)
     needs: list[str] = []
     if not have_uxplay:
-        needs.append(f"Install the receiver: {uxplay_install_hint(which)}")
+        needs.append(f"Install the receiver: {hint}")
     if avahi == "stopped":
         needs.append(f"Start the mDNS daemon: {AVAHI_START_HINT}")
     embedded = running and _airplay_embedded
     return {
         "running": running,
         "name": "freetunes" if running else "",
-        "howto": ("iPhone Control Center -> Screen Mirroring -> freetunes "
-                  "(same Wi-Fi on both)"),
+        "howto": AIRPLAY_HOWTO,
         "embedded": embedded,
         "stream_url": "/screen/airplay/stream" if embedded else "",
         "uxplay": have_uxplay,
         "avahi": avahi,
         "ready": have_uxplay and avahi != "stopped",
         "needs": needs,
-        "install_hint": uxplay_install_hint(which),
+        "install_hint": hint,
         "avahi_hint": AVAHI_START_HINT,
-        "log": _airplay_log_tail() if running else "",
+        "log": _airplay.tail(400) if running else "",
     }
+
+
+AIRPLAY_HOWTO = ("iPhone Control Center -> Screen Mirroring -> freetunes "
+                 "(same Wi-Fi on both)")
 
 
 def airplay_start(which: Callable[[str], str | None] = _default_which,
@@ -2040,22 +1902,19 @@ def airplay_start(which: Callable[[str], str | None] = _default_which,
     standalone window back (useful for full resolution or when GStreamer
     lacks the JPEG elements).
     """
-    global _airplay_proc, _airplay_log, _airplay_embedded
-    if os.environ.get("FREETUNES_MOCK", "0") == "1":
+    global _airplay_embedded
+    if _mock_env():
         return {"ok": False, "running": False,
                 "reason": "Mock mode — AirPlay needs real Wi-Fi + uxplay."}
-    if _proc_alive(_airplay_proc):
+    if _airplay.alive():
         return {"ok": True, "running": True, "name": "freetunes",
-                "howto": airplay_status(which)["howto"]}
-    try:
-        binary = which("uxplay")
-    except Exception:
-        binary = None
+                "embedded": _airplay_embedded, "howto": AIRPLAY_HOWTO}
+    binary = _which_soft(which, "uxplay")
     if not binary:
+        hint = uxplay_install_hint(which)
         return {"ok": False, "running": False,
-                "reason": f"No uxplay on this computer — "
-                          f"{uxplay_install_hint(which)}",
-                "fix": uxplay_install_hint(which)}
+                "reason": f"No uxplay on this computer — {hint}",
+                "fix": hint}
     if avahi_state() == "stopped":
         # uxplay would start and publish to nobody: the phone finds the
         # receiver over mDNS, so this is a refusal, not a warning.
@@ -2068,62 +1927,25 @@ def airplay_start(which: Callable[[str], str | None] = _default_which,
     if embed:
         cmd += ["-vs", airplay_sink()]
     try:
-        fd, log_path = tempfile.mkstemp(prefix="freetunes-airplay-",
-                                        suffix=".log")
-        os.close(fd)
-        _airplay_log = Path(log_path)
-        # uxplay's own words are the only useful diagnosis when it dies;
-        # DEVNULL threw them away and left "it just does not work".
-        with _airplay_log.open("w") as fh:
-            _airplay_proc = subprocess.Popen(
-                cmd, stdout=fh, stderr=subprocess.STDOUT)
-        _airplay_embedded = embed
-    except (OSError, FileNotFoundError) as e:
-        _airplay_proc = None
+        _airplay.spawn(cmd)
+    except OSError as e:
         return {"ok": False, "running": False, "reason": str(e)}
+    _airplay_embedded = embed
     time.sleep(1.5)
-    if not _proc_alive(_airplay_proc):
-        tail = _airplay_log_tail()
-        _airplay_stop_proc()
+    if not _airplay.alive():
+        tail = _airplay.tail(400)
+        airplay_stop()
         return {"ok": False, "running": False,
-                "reason": ("uxplay exited at once. " + tail).strip()
-                          or "uxplay exited at once and said nothing."}
+                "reason": ("uxplay exited at once. " + tail).strip()}
     return {"ok": True, "running": True, "name": "freetunes",
-            "embedded": embed,
-            "howto": airplay_status(which)["howto"],
-            "log": _airplay_log_tail()}
-
-
-def _airplay_log_tail(limit: int = 400) -> str:
-    """Last words of the receiver, so failures name themselves."""
-    if _airplay_log is None:
-        return ""
-    try:
-        return _airplay_log.read_text(errors="replace").strip()[-limit:]
-    except OSError:
-        return ""
-
-
-def _airplay_stop_proc() -> None:
-    global _airplay_proc, _airplay_log, _airplay_embedded
-    _airplay_embedded = False
-    p, _airplay_proc = _airplay_proc, None
-    if p is not None and p.poll() is None:
-        p.terminate()
-        try:
-            p.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            p.kill()
-    log, _airplay_log = _airplay_log, None
-    if log is not None:
-        try:
-            log.unlink()
-        except OSError:
-            pass
+            "embedded": embed, "howto": AIRPLAY_HOWTO,
+            "log": _airplay.tail(400)}
 
 
 def airplay_stop() -> dict:
-    _airplay_stop_proc()
+    global _airplay_embedded
+    _airplay_embedded = False
+    _airplay.stop()
     return {"ok": True, "running": False}
 
 
@@ -2134,6 +1956,5 @@ def get_screen() -> ScreenService:
     """Process-wide service; mock mode forces placeholder-only shots."""
     global _screen
     if _screen is None:
-        mock = os.environ.get("FREETUNES_MOCK", "0") == "1"
-        _screen = ScreenService(mock=mock) if mock else ScreenService()
+        _screen = ScreenService(mock=_mock_env())
     return _screen
