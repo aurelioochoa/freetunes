@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="VLC app icon">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#ff8800"/>
+  <polygon points="27,12 37,12 42,30 22,30" fill="#ffffff"/>
+  <polygon points="21.2,34 42.8,34 48,45 16,45" fill="#ffffff"/>
+  <polygon points="32,12 37,12 42,30 32,30" fill="#f2f2f4"/>
+  <polygon points="32,34 42.8,34 48,45 32,45" fill="#f2f2f4"/>
+  <rect x="14" y="46" width="36" height="7" rx="3.5" fill="#ffffff"/>
+</svg>

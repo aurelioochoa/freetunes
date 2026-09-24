@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="freetunes icon">
+  <defs>
+    <linearGradient id="ft-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a84ff"/>
+      <stop offset="1" stop-color="#bf5af2"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#ft-bg)"/>
+  <g fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M26 44 V20 l18 -4 v22"/>
+    <circle cx="21" cy="44" r="6" fill="#ffffff" stroke="none"/>
+    <circle cx="39" cy="38" r="6" fill="#ffffff" stroke="none"/>
+  </g>
+</svg>

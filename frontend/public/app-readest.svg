@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Readest app icon">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#0a84ff"/>
+  <path d="M32 14 C27 11 20 11 15 13 L15 49 C20 47 27 47 32 50 C37 47 44 47 49 49 L49 13 C44 11 37 11 32 14 Z" fill="#ffffff"/>
+  <path d="M32 14 L32 50" stroke="#0a84ff" stroke-width="2.5"/>
+  <path d="M20 20 C24 19 28 19.5 30 21 M20 27 C24 26 28 26.5 30 28 M34 21 C36 19.5 40 19 44 20 M34 28 C36 26.5 40 26 44 27" stroke="#0a84ff" stroke-width="2" stroke-linecap="round"/>
+</svg>
