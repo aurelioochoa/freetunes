@@ -1,6 +1,3 @@
-import os
-import tempfile
-
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -18,14 +15,11 @@ def test_health_and_apps():
     assert "org.videolan.vlc-ios" in ids
 
 
-def test_sync_preview_and_run(tmp_path=None):
+def test_sync_preview_and_run(tmp_path):
     reset_mock()
-    d = tempfile.mkdtemp()
-    p = os.path.join(d, "song.mp3")
-    with open(p, "wb") as f:
-        f.write(b"hello-music")
+    (tmp_path / "song.mp3").write_bytes(b"hello-music")
     body = {"app_bundle_id": "org.videolan.vlc-ios",
-            "music_dir": d, "mirror_delete": False}
+            "music_dir": str(tmp_path), "mirror_delete": False}
     prev = client.post("/sync/preview", json=body).json()
     assert prev["to_push"][0]["filename"] == "song.mp3"
     run = client.post("/sync/run", json=body).json()

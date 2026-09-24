@@ -22,18 +22,11 @@ def _proxied_prefixes() -> set[str]:
 
 
 def test_vite_proxy_covers_every_backend_route():
-    from fastapi.testclient import TestClient  # noqa: local import, hermetic
-
     from app.main import create_app
-    spec = create_app().openapi()
-    missing: list[str] = []
     proxied = _proxied_prefixes()
-    for path in spec["paths"]:
-        first = "/" + path.strip("/").split("/")[0]
-        if not any(first == p or first.startswith(p + "/") or p == first for p in proxied):
-            # exact first-segment match required
-            if first not in proxied:
-                missing.append(path)
+    # Exact first-segment match: '/screen' must not be covered by '/s'.
+    missing = [path for path in create_app().openapi()["paths"]
+               if "/" + path.strip("/").split("/")[0] not in proxied]
     assert not missing, f"backend routes unreachable via vite proxy (tab renders empty): {missing}"
 
 

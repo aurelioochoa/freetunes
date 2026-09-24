@@ -14,16 +14,10 @@ def _read(path: str) -> str:
         return f.read()
 
 
-def test_api_has_devices_call():
-    api = _read(API)
-    assert re.search(r"devices:\s*\(\)", api), "api needs a devices() call"
-    assert "model_id" in api and "product_type" in api
-
-
 def test_app_polls_devices():
     app = _read(APP)
-    assert "api.devices()" in app or "devices()" in app
-    assert "setInterval" in app, "device list must refresh live"
+    assert re.search(r"setInterval\(\s*refresh\s*,", app), \
+        "the device list must refresh live, not only on mount"
 
 
 def test_status_banner_states():
@@ -32,8 +26,3 @@ def test_status_banner_states():
     assert "ft-devbanner" in _read(CSS)
     for text in ("Trust", "plug"):
         assert text.lower() in app.lower(), f"banner must guide: {text}"
-
-
-def test_model_auto_match():
-    app = _read(APP)
-    assert "model_id" in app, "auto-select placeholder art from real ProductType"

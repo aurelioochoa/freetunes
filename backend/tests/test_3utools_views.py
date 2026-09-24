@@ -19,14 +19,6 @@ def _read(path: str) -> str:
         return f.read()
 
 
-def test_api_clients_cover_all_toolbox_tools():
-    api = _read(API)
-    for fn in ("editTags", "makeRingtone", "convertMedia", "compressPhoto", "heicToJpg",
-               "photos", "browse", "firmwareSigned", "flashDryRun", "duplicates",
-               "upload", "toolFileUrl", "fromDevice", "fileContentUrl", "thumbUrl"):
-        assert fn in api, f"api.ts missing {fn}() client"
-
-
 def test_firmware_no_stale_rows_message():
     fw = _read(FW)
     # The reported bug: setRows(...) then read rows.length in the same

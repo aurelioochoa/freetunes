@@ -157,3 +157,16 @@ def test_dev_sh_colors_tags():
     assert "033[" in src, "dev.sh must define ANSI colors for the tags"
     assert "C_BACKEND" in src and "C_FRONTEND" in src, \
         "backend/frontend tags must differ in color so scans stay instant"
+
+
+def test_requirements_keep_the_quicktime_fork_installable():
+    # The screen-mirror fork installs as pymobiledevice3 0.1.devN (no tags)
+    # and needs construct-typing<0.8. A version floor on pymobiledevice3
+    # made `make setup` swap the fork for stock PyPI (QuickTime tab gone);
+    # pinning construct-typing<0.8 here made the file unresolvable, since
+    # stock pymobiledevice3 11.x requires >=0.8. The fork's own installer
+    # (VALERIA_INSTALL_PACKAGES) owns that pin.
+    reqs = [line.split("#")[0].strip() for line in _read(REQUIREMENTS).splitlines()]
+    pmd3 = [r for r in reqs if r.startswith("pymobiledevice3")]
+    assert pmd3 == ["pymobiledevice3"], f"no version constraint allowed: {pmd3}"
+    assert not any(r.startswith("construct-typing") for r in reqs)

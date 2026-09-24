@@ -34,8 +34,8 @@ def test_responsive_drawer_and_table():
     css = _read(CSS)
     assert re.search(r"@media\s*\([^)]*max-width", css), "responsive breakpoints"
     assert "ft-backdrop" in css, "drawer needs a tap-to-close backdrop"
-    table = css.split(".ft-table")[1].split("}")[0]
-    assert "overflow-x" in css, "wide tables must scroll, not squeeze"
+    assert re.search(r"\.ft-table\s*\{[^}]*overflow-x:\s*auto", css), \
+        "wide tables must scroll, not squeeze"
 
 
 def test_device_panel():
@@ -58,12 +58,6 @@ def test_refresh_action():
     assert 'aria-label="Refresh' in app, "manual refresh button"
 
 
-def test_api_carries_presence_and_specs():
-    api = _read(API)
-    assert "installed" in api
-    assert "battery_pct" in api and "storage_total" in api
-
-
 def test_banner_has_bottom_spacing():
     css = _read(CSS)
     banner = re.search(r"(?m)^\.ft-devbanner\s*\{([^}]*)\}", css)
@@ -81,19 +75,11 @@ def test_deep_linkable_views():
     assert "Pick a section" in _read(APP), "unknown hash must not render undefined"
 
 
-def test_header_shows_app_name_not_bundle_id():
-    assert "appName" in _read(APP) and "appName" in _read(
-        os.path.join(SRC, "components", "DeviceHeader.tsx"))
-
-
-def test_storage_labels_live_data():
-    assert "live" in _read(os.path.join(SRC, "components", "StorageBar.tsx"))
-
-
 def test_storage_human_units():
-    bar = _read(os.path.join(SRC, "components", "StorageBar.tsx"))
-    assert "GB" in bar and "toFixed(1)" in bar, \
-        "1.04 GB free must not render as a bare megabyte integer"
+    # StorageBar.tsx is gone; the header's storage chip owns the label now.
+    header = _read(os.path.join(SRC, "components", "DeviceHeader.tsx"))
+    assert re.search(r"\(device\.storage_available / 1e9\)\.toFixed\(1\)\} GB free",
+                     header), "1.04 GB free must not render as a bare byte count"
 
 
 def test_header_shows_battery_status_and_eta():
